@@ -1,0 +1,416 @@
+---
+title: "Late Blight Model"
+date: "4/6/2020"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(
+	echo = TRUE,
+	message = TRUE,
+	warning = TRUE
+)
+
+library(raster)
+library(folderfun)
+library(sp)
+library(matrixStats)
+library(ggplot2)
+library(PoPS)
+library(MASS)
+# library(ParallelLogger)
+library(doParallel)
+library(lubridate)
+library(terra)
+folderfun::setff("In","E:/USABlight/data") # Change to your local directory
+
+```
+
+## Setting up the calibration
+
+```{r eval=FALSE, include=FALSE}
+
+infected_years_file <- ffIn("late_blight_2011_end.tif") 
+number_of_observations <- 92  # This is the number of infected cells or total observations make consistent across each temporal step of your data
+prior_number_of_observations <- 0 # in this case no weight is given to the prior
+prior_means <- c(0, 0, 0, 0, 0, 0)    # having all 0's 
+prior_cov_matrix <- matrix(ncol = 6, nrow = 6, 0)
+params_to_estimate <- c(T, T, T, T, F, F)  ### 1st: reproductive rates, 2nd: natural distance, 3rd: percent natural, 4tH: anthropogenic distance, 5th Natural Kappa, 6th anthropogenic kappa
+number_of_generations <- 7 # this is how many generations the approximate bayesian computation algorithm runs
+generation_size <- 5 # the number of accepted runs of the model below the threshold.
+checks = c(90, 20000, 1000, 2000)   # 1: difference between number of infected cells in different years, 2: difference in distance in different years
+# 3 and 4 don't matter if you keep the metric of success the same
+infected_file <- ffIn("late_blight_2011_start.tif") #starting week
+host_file <- ffIn("CDL_2011_36.tif")
+total_populations_file <- ffIn("total_hosts_2011.tif")
+temp <- FALSE
+temperature_coefficient_file <- ""
+precip <- FALSE
+precipitation_coefficient_file <- ""
+model_type = "SEI"
+latency_period = 2 #2-3 days
+time_step <- "week" 
+season_month_start <- 1
+season_month_end <- 12
+start_date <- "2011-01-01"
+end_date <- "2011-12-31"
+use_lethal_temperature <- FALSE
+temperature_file <- ""
+lethal_temperature <- -30
+lethal_temperature_month <- 1
+mortality_on <- FALSE
+mortality_rate <- 0
+mortality_time_lag <- 0
+management <- FALSE
+treatment_dates <- c('') 
+treatments_file <- ""
+treatment_method <- "all infected"
+natural_kernel_type <- "cauchy"
+anthropogenic_kernel_type <- "cauchy"
+natural_dir <- "NONE"
+natural_kappa <- 0
+anthropogenic_dir <- "NONE"
+anthropogenic_kappa <- 0
+pesticide_duration <- c(0)
+pesticide_efficacy <- 1.0
+mask <- NULL
+success_metric <- "number of locations and total distance"  
+output_frequency <- "week"
+output_frequency_n <- 1
+movements_file = ""  ## ignore - for when hosts move (animals moving from farm to farm)
+use_movements <- FALSE
+percent_natural_dispersal <- 1.0
+anthropogenic_distance_scale <- 0.0
+start_exposed <- TRUE
+generate_stochasticity <- TRUE
+establishment_stochasticity <- TRUE
+movement_stochasticity <- TRUE
+deterministic <- FALSE
+establishment_probability <- 0.5
+dispersal_percentage = 0.99
+quarantine_areas_file <- ""
+use_quarantine <- FALSE
+use_spreadrates <- FALSE
+calibration_method <- "ABC"
+number_of_iterations <- 100000
+
+calibrated_data <- calibrate(infected_years_file,
+                             number_of_observations,
+                             prior_number_of_observations,
+                             prior_means, 
+                             prior_cov_matrix,
+                             params_to_estimate,
+                             number_of_generations,
+                             generation_size,
+                             checks,
+                             infected_file,
+                             host_file,
+                             total_populations_file,
+                             temp,
+                             temperature_coefficient_file,
+                             precip,
+                             precipitation_coefficient_file,
+                             model_type,
+                             latency_period,
+                             time_step,
+                             season_month_start,
+                             season_month_end,
+                             start_date,
+                             end_date,
+                             use_lethal_temperature,
+                             temperature_file,
+                             lethal_temperature,
+                             lethal_temperature_month,
+                             mortality_on,
+                             mortality_rate,
+                             mortality_time_lag,
+                             management,
+                             treatment_dates,
+                             treatments_file,
+                             treatment_method,
+                             natural_kernel_type,
+                             anthropogenic_kernel_type,
+                             natural_dir,
+                             natural_kappa,
+                             anthropogenic_dir,
+                             anthropogenic_kappa,
+                             pesticide_duration,
+                             pesticide_efficacy,
+                             mask,
+                             success_metric,
+                             output_frequency,
+                             output_frequency_n,
+                             movements_file,
+                             use_movements, 
+                             start_exposed,
+                             generate_stochasticity,
+                             establishment_stochasticity,
+                             movement_stochasticity,
+                             deterministic,
+                             establishment_probability,
+                             dispersal_percentage,
+                             quarantine_areas_file,
+                             use_quarantine,
+                             use_spreadrates,
+                             calibration_method,
+                             number_of_iterations)
+
+
+
+calibrated_data <- as.data.frame(t(calibrated_data))
+means_control = calibrated_data$posterior_means
+cov_control = calibrated_data$posterior_cov_matrix
+raw_calib_control = calibrated_data$raw_calibration_data
+total_obs_control = calibrated_data$total_number_of_observations
+write.csv(total_obs_control, ffIn("total_obs.csv"))
+write.csv(means_control, ffIn("means_control.csv"), row.names = FALSE)
+write.csv(cov_control, ffIn("cov_control.csv"), row.names = FALSE)
+write.csv(raw_calib_control, ffIn("raw_calib_control.csv"))
+
+
+```
+
+## Plotting Calibration curves
+```{r calibration curves, echo=FALSE}
+parameter_means <- as.matrix(read.csv(ffIn("means_control.csv")))
+parameter_cov_matrix <- read.csv(ffIn("cov_control.csv"))
+# parameter_means[2] <- 2
+
+parameters <- MASS::mvrnorm(200000,
+                            parameter_means,
+                            parameter_cov_matrix)
+while (any(parameters[, 1] < 0 |
+           parameters[, 2] < 0 |
+           parameters[, 3] > 1 |
+           parameters[, 3] < 0 |
+           parameters[, 4] < 0 |
+           parameters[, 5] < 0 |
+           parameters[, 6] < 0)) {
+  number_of_draws <- nrow(parameters[parameters[, 1] < 0 |
+                                       parameters[, 2] < 0 |
+                                       parameters[, 3] > 1 |
+                                       parameters[, 3] < 0 |
+                                       parameters[, 4] < 0 |
+                                       parameters[, 5] < 0 |
+                                       parameters[, 6] < 0, ])
+  if (is.null(number_of_draws)) {
+    number_of_draws <- 1
+  }
+  
+  parameters[parameters[, 1] < 0 |
+               parameters[, 2] < 0 |
+               parameters[, 3] > 1 |
+               parameters[, 3] < 0 |
+               parameters[, 4] < 0 |
+               parameters[, 5] < 0 |
+               parameters[, 6] < 0, ] <-
+    MASS::mvrnorm(number_of_draws,
+                  parameter_means,
+                  parameter_cov_matrix)
+}
+parameters <- data.frame(parameters)
+
+ggplot(parameters, aes(x = X1, fill = X1)) + geom_density(alpha = 0.5) + theme_classic()
+ggplot(parameters, aes(x = X2, fill = X1)) + geom_density(alpha = 0.5) + theme_classic()
+```
+
+## Validation
+```{r eval=FALSE, include=FALSE}
+
+parameter_means <- t(read.csv(ffIn("means_control.csv")))
+parameter_cov_matrix <- read.csv(ffIn("cov_control.csv"))
+number_of_iterations = 10
+number_of_cores = 4
+# parameter_means_c<-means_control$`calibrated_data$posterior_means`[1:6]
+
+validated_data <- validate(infected_years_file, 
+                           number_of_iterations, 
+                           number_of_cores,
+                           parameter_means,
+                           parameter_cov_matrix,
+                           infected_file, 
+                           host_file, 
+                           total_plants_file, 
+                           temp = FALSE, 
+                           temperature_coefficient_file = "", 
+                           precip = FALSE, 
+                           precipitation_coefficient_file = "", 
+                           model_type,
+                           latency_period,
+                           time_step,
+                           season_month_start, 
+                           season_month_end, 
+                           start_date, 
+                           end_date,  
+                           use_lethal_temperature = FALSE, 
+                           temperature_file = "",
+                           lethal_temperature, 
+                           lethal_temperature_month,
+                           mortality_on = FALSE, 
+                           mortality_rate, 
+                           mortality_time_lag, 
+                           management = FALSE, 
+                           treatment_dates, 
+                           treatments_file,
+                           treatment_method,
+                           natural_kernel_type,
+                           anthropogenic_kernel_type,
+                           natural_dir, 
+                           anthropogenic_dir, 
+                           pesticide_duration, 
+                           pesticide_efficacy,
+                           mask, 
+                           success_metric, 
+                           output_frequency,
+                           movements_file, 
+                           use_movements, 
+                           start_exposed)
+```
+## Run model
+
+```{r}
+
+parameter_means <- t(read.csv(ffIn("means_control.csv")))
+parameter_cov_matrix <- read.csv(ffIn("cov_control.csv"))
+infected_file <- ffIn("late_blight_2011_start.tif")
+host_file <- ffIn("CDL_2011_36.tif")
+total_populations_file <- ffIn("total_hosts_2011.tif")
+temp <- FALSE
+temperature_coefficient_file <- ""
+precip <- FALSE
+precipitation_coefficient_file <- ""
+model_type <- "SEI"
+latency_period = 2 
+time_step <- "week"
+season_month_start <- 1
+season_month_end <- 12
+start_date <- "2011-01-01"
+end_date <- '2011-12-31'
+use_lethal_temperature <- FALSE
+temperature_file <- ""
+lethal_temperature <- -30
+lethal_temperature_month <- 1
+mortality_on <- FALSE
+mortality_rate <- 0
+mortality_time_lag <- 0
+management <- FALSE
+treatment_dates <- c('')
+treatments_file <- ""
+treatment_method <- "all infected"
+natural_kernel_type <- "cauchy"
+anthropogenic_kernel_type <- "cauchy"
+natural_dir <- "NONE"
+anthropogenic_dir <- "NONE"
+pesticide_duration <- c(0)
+pesticide_efficacy <- 1.0
+output_frequency <- "week"
+output_frequency_n <- 1
+movements_file <- ""  ## ignore - for when hosts move (animals moving from farm to farm)
+use_movements <- FALSE
+
+
+number_of_iterations <- 100
+number_of_cores <- 10
+start_exposed <- TRUE
+generate_stochasticity <- TRUE
+establishment_stochasticity <- TRUE
+movement_stochasticity <- TRUE
+deterministic <- FALSE
+establishment_probability <- 0.5
+dispersal_percentage = 0.99
+quarantine_areas_file <- ""
+use_quarantine <- FALSE
+use_spreadrates <- FALSE
+
+control_sim <- pops_multirun(infected_file,
+                             host_file,
+                             total_populations_file,
+                             parameter_means,
+                             parameter_cov_matrix,
+                             temp,
+                             temperature_coefficient_file,
+                             precip,
+                             precipitation_coefficient_file,
+                             model_type,
+                             latency_period,
+                             time_step,
+                             season_month_start,
+                             season_month_end,
+                             start_date,
+                             end_date,
+                             use_lethal_temperature,
+                             temperature_file,
+                             lethal_temperature,
+                             lethal_temperature_month,
+                             mortality_on,
+                             mortality_rate,
+                             mortality_time_lag,
+                             management,
+                             treatment_dates,
+                             treatments_file,
+                             treatment_method,
+                             natural_kernel_type,
+                             anthropogenic_kernel_type,
+                             natural_dir,
+                             anthropogenic_dir,
+                             number_of_iterations,
+                             number_of_cores,
+                             pesticide_duration,
+                             pesticide_efficacy,
+                             random_seed = NULL,
+                             output_frequency,
+                             output_frequency_n,
+                             movements_file,
+                             use_movements,
+                             start_exposed,
+                             generate_stochasticity,
+                             establishment_stochasticity,
+                             movement_stochasticity,
+                             deterministic,
+                             establishment_probability,
+                             dispersal_percentage,
+                             quarantine_areas_file,
+                             use_quarantine,
+                             use_spreadrates)
+
+
+mean_control <- as.vector((extract(control_sim$simulation_mean, sl_points)))
+sd_control <- as.vector((extract(control_sim$simulation_sd, sl_points)))
+distance_from_focus<-c(0,5,10,20,30,40,50,60,70,80,90,100)
+control_output<-as.data.frame(cbind(distance_from_focus, mean_control))
+control_output$sd_control <- sd_control
+control_output$observed <- extract(end_infection_control, sl_points)
+
+control_output_l <- 
+  reshape(control_output, idvar="distance_from_focus", 
+          varying = c("observed","mean_control"), 
+          v.names = c("mean_disease_prevalence"), 
+          times = c("observed","mean_control"), 
+          direction = "long")
+
+control_output$difference <- 
+  control_output$mean_control - control_output$observed
+sum(control_output$difference)
+
+control_output_l$sd_control[control_output_l$time == "observed"] <- 
+  control$sd_severity * 10
+
+control_output_l$time[control_output_l$time == "observed"] <- "Field"
+control_output_l$time[control_output_l$time == "mean_control"] <- "Simulated"
+control_output_l$sd_control <- control_output_l$sd_control/1000
+control_output_l$mean_disease_prevalence <- 
+  control_output_l$mean_disease_prevalence/1000
+
+ggplot(control_output_l, 
+       aes(distance_from_focus, 
+           mean_disease_prevalence, 
+           group=time, 
+           color = time)) + 
+  geom_point(aes(shape=time)) + 
+  geom_errorbar(
+    aes(ymin=mean_disease_prevalence-sd_control, 
+        ymax=mean_disease_prevalence+sd_control),
+    width=.1) +
+  theme_classic() + 
+  theme(legend.title = element_blank())
+
+```
