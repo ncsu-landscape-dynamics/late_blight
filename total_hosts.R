@@ -12,5 +12,3 @@ outname <- paste("total_hosts_2019.tif")
 writeRaster(total_hosts, filename=outname, format='GTiff', overwrite=T)
 
 
-plot(total_hosts)
-plot(hosts)
